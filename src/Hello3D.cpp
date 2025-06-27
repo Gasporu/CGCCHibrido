@@ -92,7 +92,7 @@ int main()
     GLuint VAO = setupGeometry();
 
     // Carregar textura (troque para o caminho da sua imagem)
-    GLuint textureID = loadTexture("C:/Users/Pedro/Desktop/trbalhoDOkaua/CGCCHibrido/assets/tex/pixelWall.png");
+    GLuint textureID = loadTexture("C:/Users/Pedro/Desktop/atividade_cg/CGCCHibrido/assets/tex/pixelWall.png");
     if (textureID == 0) {
         cout << "Erro ao carregar textura" << endl;
         return -1;
