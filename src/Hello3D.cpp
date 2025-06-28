@@ -3,57 +3,45 @@
 #include <sstream>
 #include <vector>
 #include <string>
+#include <map>
+#include <filesystem>
+
 #include "json.hpp"
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
+
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include <filesystem>
 
 using namespace std;
 using namespace glm;
 using json = nlohmann::json;
 
+struct Model {
+    GLuint vaoId;
+    int vertexCount;
+};
+
+struct SceneObject {
+    string modelPath;
+    Model model;
+    GLuint textureId;
+    vec3 position;
+    vec3 scale;
+    vec3 rotation;
+    vector<vec3> trajectoryPoints;
+    size_t currentTargetIndex;
+    float moveSpeed;
+};
+
 const GLuint WIDTH = 800, HEIGHT = 600;
-GLFWwindow *window;
+GLFWwindow* window;
 
-vector<vec3> positions;
-vector<vec2> texCoords;
-GLuint textureID;
-string trajectoryBasePath;
-
-vector<vec3> trajectoryPoints1 = {
-    vec3(0.0f, 0.0f, -5.0f), vec3(1.5f, 1.0f, -5.0f), vec3(3.0f, 2.5f, -5.0f),
-    vec3(2.0f, 4.5f, -5.0f), vec3(0.0f, 6.0f, -5.0f), vec3(-2.5f, 5.0f, -5.0f),
-    vec3(-4.0f, 2.5f, -5.0f), vec3(-3.0f, -0.5f, -5.0f), vec3(0.0f, -2.0f, -5.0f)
-};
-size_t currentTargetIndex1 = 0;
-vec3 cubePosition1 = vec3(0.0f, 0.0f, -5.0f);
-
-vector<vec3> trajectoryPoints2 = {
-    vec3(-6.0f, 0.0f, -5.0f), vec3(-4.0f, 2.0f, -5.0f), vec3(-2.0f, 0.0f, -5.0f),
-    vec3(0.0f, 2.0f, -5.0f), vec3(2.0f, 0.0f, -5.0f), vec3(4.0f, 2.0f, -5.0f),
-    vec3(6.0f, 0.0f, -5.0f)
-};
-size_t currentTargetIndex2 = 0;
-vec3 cubePosition2 = vec3(4.0f, 0.0f, -5.0f);
-
-vector<vec3> trajectoryPoints3 = {
-    vec3(0.0f, -5.0f, -5.0f), vec3(0.0f, -3.0f, -5.0f), vec3(0.0f, -1.0f, -5.0f),
-    vec3(0.0f, 1.0f, -5.0f), vec3(0.0f, 3.0f, -5.0f), vec3(0.0f, 5.0f, -5.0f),
-    vec3(0.0f, 3.0f, -5.0f), vec3(0.0f, 1.0f, -5.0f), vec3(0.0f, -1.0f, -5.0f),
-    vec3(0.0f, -3.0f, -5.0f)
-};
-size_t currentTargetIndex3 = 0;
-vec3 cubePosition3 = vec3(-4.0f, 0.0f, -5.0f);
-
-float moveSpeed = 1.0f;
-
-class Camera
-{
+class Camera {
 public:
     vec3 position;
     float yaw;
@@ -93,12 +81,12 @@ private:
     }
 };
 
-Camera camera;
-vec3 cubeScale = vec3(1.0f);
-float cubeRotationX = 0.0f, cubeRotationY = 0.0f, cubeRotationZ = 0.0f;
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mode);
+Model loadModel(const string& objPath);
+GLuint loadTexture(const string& filePath);
+void loadTrajectoryPoints(vector<vec3>& points, const string& filename);
 
-const char* vertexShaderSource = R"(
-#version 400 core
+const char* vertexShaderSource = R"(#version 400 core
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec2 aTexCoord;
 layout (location = 2) in vec3 aNormal;
@@ -108,17 +96,14 @@ out vec3 Normal;
 uniform mat4 projection;
 uniform mat4 view;
 uniform mat4 model;
-void main()
-{
+void main(){
     gl_Position = projection * view * model * vec4(aPos, 1.0);
     FragPos = vec3(model * vec4(aPos, 1.0));
     Normal = mat3(transpose(inverse(model))) * aNormal;
     TexCoord = aTexCoord;
-}
-)";
+})";
 
-const char* fragmentShaderSource = R"(
-#version 400 core
+const char* fragmentShaderSource = R"(#version 400 core
 in vec2 TexCoord;
 in vec3 FragPos;
 in vec3 Normal;
@@ -127,9 +112,7 @@ uniform sampler2D texture1;
 uniform vec3 lightPos;
 uniform vec3 viewPos;
 uniform vec3 lightColor;
-uniform vec3 objectColor;
-void main()
-{
+void main(){
     vec3 ambientColor = 0.2 * lightColor;
     vec3 norm = normalize(Normal);
     vec3 lightDir = normalize(lightPos - FragPos);
@@ -143,53 +126,20 @@ void main()
     vec3 phong = (ambientColor + diffuseColor + specularColor);
     vec4 texColor = texture(texture1, TexCoord);
     FragColor = vec4(phong, 1.0) * texColor;
-}
-)";
+})";
 
-void key_callback(GLFWwindow* window, int key, int scancode, int action, int mode);
-GLuint setupShader();
-GLuint setupGeometry();
-bool loadOBJ(const string& objPath, const string& mtlPath, string& textureFileOut);
-GLuint loadTexture(const string& filePath);
-void drawCube(GLuint shaderProgram, GLuint VAO, vec3 position, vec3 scale, vec3 rotation);
-void loadTrajectoryPoints(vector<vec3>& points, const string& filename);
-void saveTrajectoryPoints(const vector<vec3>& points, const string& filename);
+Camera camera;
+vector<SceneObject> sceneObjects;
+map<string, Model> loadedModels;
+map<string, GLuint> loadedTextures;
 
-int main()
-{
-    cout << "O programa esta procurando arquivos em: " << std::filesystem::current_path() << endl;
-
-    string objPath, mtlPath, texturePath;
-    try {
-        ifstream f("config.json");
-        if (!f.is_open()) {
-            cout << "ERRO: Nao foi possivel abrir o arquivo config.json" << endl;
-            return -1;
-        }
-        json config = json::parse(f);
-        objPath = config["assets"]["modelPath"];
-        mtlPath = config["assets"]["materialPath"];
-        texturePath = config["assets"]["texturePath"];
-        trajectoryBasePath = config["trajectories"]["basePath"];
-        cout << "Configuracao carregada de config.json com sucesso!" << endl;
-    }
-    catch (json::parse_error& e) {
-        cout << "ERRO de parsing no JSON: " << e.what() << endl;
-        return -1;
-    }
-    catch (json::type_error& e) {
-        cout << "ERRO de tipo no JSON (verifique se as chaves estao corretas): " << e.what() << endl;
-        return -1;
-    }
-
-    string textureFile;
-
+int main() {
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    window = glfwCreateWindow(WIDTH, HEIGHT, "Cubo Texturizado - Pedro de Gasperi", nullptr, nullptr);
+    window = glfwCreateWindow(WIDTH, HEIGHT, "Visualizador de Modelos Multiplos", nullptr, nullptr);
     glfwMakeContextCurrent(window);
     glfwSetKeyCallback(window, key_callback);
 
@@ -198,27 +148,71 @@ int main()
         return -1;
     }
 
-    glViewport(0, 0, WIDTH, HEIGHT);
     glEnable(GL_DEPTH_TEST);
 
-    GLuint shaderProgram = setupShader();
+    GLuint shaderProgram = 0;
+    {
+        GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vertexShader, 1, &vertexShaderSource, nullptr);
+        glCompileShader(vertexShader);
+        GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fragmentShader, 1, &fragmentShaderSource, nullptr);
+        glCompileShader(fragmentShader);
+        shaderProgram = glCreateProgram();
+        glAttachShader(shaderProgram, vertexShader);
+        glAttachShader(shaderProgram, fragmentShader);
+        glLinkProgram(shaderProgram);
+        glDeleteShader(vertexShader);
+        glDeleteShader(fragmentShader);
+    }
+    
+    try {
+        ifstream f("config.json");
+        json config = json::parse(f);
 
-    if (!loadOBJ(objPath, mtlPath, textureFile)) {
-        cout << "Erro ao carregar o modelo de " << objPath << endl;
+        for (const auto& item : config["scene_objects"]) {
+            SceneObject obj;
+            obj.modelPath = item["model_path"];
+            string texturePath = item["texture_path"];
+            string trajectoryPath = item["trajectory_path"];
+
+            if (loadedModels.find(obj.modelPath) == loadedModels.end()) {
+                loadedModels[obj.modelPath] = loadModel(obj.modelPath);
+            }
+            obj.model = loadedModels[obj.modelPath];
+
+            if (loadedTextures.find(texturePath) == loadedTextures.end()) {
+                loadedTextures[texturePath] = loadTexture(texturePath);
+            }
+            obj.textureId = loadedTextures[texturePath];
+            
+            if (!trajectoryPath.empty()) {
+                loadTrajectoryPoints(obj.trajectoryPoints, trajectoryPath);
+            }
+
+            if (item.contains("initial_position")) {
+                obj.position = vec3(item["initial_position"][0], item["initial_position"][1], item["initial_position"][2]);
+            } else if (!obj.trajectoryPoints.empty()) {
+                obj.position = obj.trajectoryPoints[0];
+            } else {
+                obj.position = vec3(0.0f);
+            }
+
+            obj.scale = vec3(item["initial_scale"][0], item["initial_scale"][1], item["initial_scale"][2]);
+            obj.rotation = vec3(0.0f);
+            obj.currentTargetIndex = 0;
+            obj.moveSpeed = 1.0f;
+
+            sceneObjects.push_back(obj);
+        }
+    } catch (const exception& e) {
+        cout << "ERRO ao carregar config.json ou seus assets: " << e.what() << endl;
         return -1;
     }
 
-    textureID = loadTexture(texturePath);
-    if (textureID == 0) {
-        cout << "Erro ao carregar textura: " << texturePath << endl;
-        return -1;
-    }
-
-    GLuint VAO = setupGeometry();
     mat4 projection = perspective(radians(45.0f), (float)WIDTH / (float)HEIGHT, 0.1f, 100.0f);
-    vec3 lightPos = vec3(3.0f, 3.0f, 3.0f);
+    vec3 lightPos = vec3(0.0f, 10.0f, 10.0f);
     vec3 lightColor = vec3(1.0f);
-    vec3 objectColor = vec3(1.0f);
     float lastFrameTime = (float)glfwGetTime();
 
     while (!glfwWindowShouldClose(window)) {
@@ -227,8 +221,9 @@ int main()
         lastFrameTime = currentFrameTime;
 
         glfwPollEvents();
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glClearColor(0.05f, 0.05f, 0.05f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
         glUseProgram(shaderProgram);
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, value_ptr(projection));
         mat4 view = camera.getViewMatrix();
@@ -236,32 +231,31 @@ int main()
         glUniform3fv(glGetUniformLocation(shaderProgram, "lightPos"), 1, value_ptr(lightPos));
         glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1, value_ptr(camera.position));
         glUniform3fv(glGetUniformLocation(shaderProgram, "lightColor"), 1, value_ptr(lightColor));
-        glUniform3fv(glGetUniformLocation(shaderProgram, "objectColor"), 1, value_ptr(objectColor));
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, textureID);
-        glUniform1i(glGetUniformLocation(shaderProgram, "texture1"), 0);
 
-        vec3 targetPos1 = trajectoryPoints1[currentTargetIndex1];
-        vec3 direction1 = normalize(targetPos1 - cubePosition1);
-        float distance1 = length(targetPos1 - cubePosition1);
-        if (distance1 < 0.05f) { currentTargetIndex1 = (currentTargetIndex1 + 1) % trajectoryPoints1.size(); }
-        else { cubePosition1 += direction1 * moveSpeed * deltaTime; }
+        for (auto& obj : sceneObjects) {
+            if (obj.trajectoryPoints.size() > 1) {
+                vec3 targetPos = obj.trajectoryPoints[obj.currentTargetIndex];
+                vec3 direction = normalize(targetPos - obj.position);
+                float distance = length(targetPos - obj.position);
+                if (distance < 0.1f) {
+                    obj.currentTargetIndex = (obj.currentTargetIndex + 1) % obj.trajectoryPoints.size();
+                } else {
+                    obj.position += direction * obj.moveSpeed * deltaTime;
+                }
+            }
 
-        vec3 targetPos2 = trajectoryPoints2[currentTargetIndex2];
-        vec3 direction2 = normalize(targetPos2 - cubePosition2);
-        float distance2 = length(targetPos2 - cubePosition2);
-        if (distance2 < 0.05f) { currentTargetIndex2 = (currentTargetIndex2 + 1) % trajectoryPoints2.size(); }
-        else { cubePosition2 += direction2 * moveSpeed * deltaTime; }
+            mat4 modelMatrix = mat4(1.0f);
+            modelMatrix = translate(modelMatrix, obj.position);
+            modelMatrix = scale(modelMatrix, obj.scale);
+            glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, value_ptr(modelMatrix));
+            
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, obj.textureId);
+            glUniform1i(glGetUniformLocation(shaderProgram, "texture1"), 0);
 
-        vec3 targetPos3 = trajectoryPoints3[currentTargetIndex3];
-        vec3 direction3 = normalize(targetPos3 - cubePosition3);
-        float distance3 = length(targetPos3 - cubePosition3);
-        if (distance3 < 0.05f) { currentTargetIndex3 = (currentTargetIndex3 + 1) % trajectoryPoints3.size(); }
-        else { cubePosition3 += direction3 * moveSpeed * deltaTime; }
-
-        drawCube(shaderProgram, VAO, cubePosition1, cubeScale, vec3(cubeRotationX, cubeRotationY, cubeRotationZ));
-        drawCube(shaderProgram, VAO, cubePosition2, cubeScale, vec3(cubeRotationX, cubeRotationY, cubeRotationZ));
-        drawCube(shaderProgram, VAO, cubePosition3, cubeScale, vec3(cubeRotationX, cubeRotationY, cubeRotationZ));
+            glBindVertexArray(obj.model.vaoId);
+            glDrawArrays(GL_TRIANGLES, 0, obj.model.vertexCount);
+        }
 
         glfwSwapBuffers(window);
     }
@@ -270,142 +264,82 @@ int main()
     return 0;
 }
 
-GLuint setupShader()
-{
-    GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vertexShader, 1, &vertexShaderSource, nullptr);
-    glCompileShader(vertexShader);
-    GLint success;
-    GLchar infoLog[512];
-    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
-    if (!success)
-    {
-        glGetShaderInfoLog(vertexShader, 512, nullptr, infoLog);
-        cout << "Vertex Shader Error:\n" << infoLog << endl;
-    }
-    GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fragmentShader, 1, &fragmentShaderSource, nullptr);
-    glCompileShader(fragmentShader);
-    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
-    if (!success)
-    {
-        glGetShaderInfoLog(fragmentShader, 512, nullptr, infoLog);
-        cout << "Fragment Shader Error:\n" << infoLog << endl;
-    }
-    GLuint shaderProgram = glCreateProgram();
-    glAttachShader(shaderProgram, vertexShader);
-    glAttachShader(shaderProgram, fragmentShader);
-    glLinkProgram(shaderProgram);
-    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
-    if (!success)
-    {
-        glGetProgramInfoLog(shaderProgram, 512, nullptr, infoLog);
-        cout << "Shader Linking Error:\n" << infoLog << endl;
-    }
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
-    return shaderProgram;
-}
-
-GLuint setupGeometry()
-{
-    GLuint VAO, VBO;
-    glGenVertexArrays(1, &VAO);
-    glGenBuffers(1, &VBO);
-    struct Vertex {
-        vec3 pos;
-        vec2 tex;
-        vec3 normal;
-    };
-    vector<Vertex> vertices;
-    for (size_t i = 0; i < positions.size(); i++) {
-        Vertex v;
-        v.pos = positions[i];
-        v.tex = texCoords[i];
-        v.normal = vec3(0.0f, 0.0f, 1.0f);
-        vertices.push_back(v);
-    }
-    glBindVertexArray(VAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), vertices.data(), GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, tex));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, normal));
-    glEnableVertexAttribArray(2);
-    glBindVertexArray(0);
-    return VAO;
-}
-
-bool loadOBJ(const string& objPath, const string& mtlPath, string& textureFileOut)
-{
-    ifstream objFile(objPath);
-    if (!objFile.is_open()) {
-        cout << "Nao foi possivel abrir OBJ: " << objPath << endl;
-        return false;
-    }
+Model loadModel(const string& objPath) {
     vector<vec3> tempPositions;
     vector<vec2> tempTexCoords;
+    vector<vec3> tempNormals;
+    vector<float> vertexData;
+    ifstream file(objPath);
+    if (!file.is_open()) {
+        throw runtime_error("Nao foi possivel abrir OBJ: " + objPath);
+    }
     string line;
-    while (getline(objFile, line)) {
-        istringstream iss(line);
+    while (getline(file, line)) {
+        stringstream ss(line);
         string prefix;
-        iss >> prefix;
+        ss >> prefix;
         if (prefix == "v") {
             vec3 pos;
-            iss >> pos.x >> pos.y >> pos.z;
+            ss >> pos.x >> pos.y >> pos.z;
             tempPositions.push_back(pos);
-        }
-        else if (prefix == "vt") {
+        } else if (prefix == "vt") {
             vec2 tex;
-            iss >> tex.x >> tex.y;
-            tex.y = 1.0f - tex.y;
+            ss >> tex.x >> tex.y;
             tempTexCoords.push_back(tex);
-        }
-        else if (prefix == "f") {
+        } else if (prefix == "vn") {
+            vec3 norm;
+            ss >> norm.x >> norm.y >> norm.z;
+            tempNormals.push_back(norm);
+        } else if (prefix == "f") {
             for (int i = 0; i < 3; i++) {
-                string v;
-                iss >> v;
-                size_t pos1 = v.find('/');
-                size_t pos2 = v.find('/', pos1 + 1);
-                int vi = stoi(v.substr(0, pos1)) - 1;
-                int ti = stoi(v.substr(pos1 + 1, pos2 - pos1 - 1)) - 1;
-                positions.push_back(tempPositions[vi]);
-                texCoords.push_back(tempTexCoords[ti]);
+                string face_data;
+                ss >> face_data;
+                stringstream face_ss(face_data);
+                string v_str, vt_str, vn_str;
+                getline(face_ss, v_str, '/');
+                getline(face_ss, vt_str, '/');
+                getline(face_ss, vn_str, '/');
+                int v_idx = stoi(v_str) - 1;
+                int vt_idx = stoi(vt_str) - 1;
+                int vn_idx = stoi(vn_str) - 1;
+                vertexData.push_back(tempPositions[v_idx].x);
+                vertexData.push_back(tempPositions[v_idx].y);
+                vertexData.push_back(tempPositions[v_idx].z);
+                vertexData.push_back(tempTexCoords[vt_idx].x);
+                vertexData.push_back(1.0f - tempTexCoords[vt_idx].y);
+                vertexData.push_back(tempNormals[vn_idx].x);
+                vertexData.push_back(tempNormals[vn_idx].y);
+                vertexData.push_back(tempNormals[vn_idx].z);
             }
         }
     }
-    ifstream mtlFile(mtlPath);
-    if (!mtlFile.is_open()) {
-        cout << "Nao foi possivel abrir MTL: " << mtlPath << endl;
-        return false;
-    }
-    while (getline(mtlFile, line)) {
-        istringstream iss(line);
-        string prefix;
-        iss >> prefix;
-        if (prefix == "map_Kd") {
-            string texFile;
-            iss >> texFile;
-            string mtlDir = mtlPath.substr(0, mtlPath.find_last_of("/\\"));
-            textureFileOut = mtlDir + "/" + texFile;
-            break;
-        }
-    }
-    cout << "OBJ carregado com " << positions.size() << " vertices.\n";
-    return true;
+    GLuint VAO, VBO;
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+    glBindVertexArray(VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, vertexData.size() * sizeof(float), vertexData.data(), GL_STATIC_DRAW);
+    int stride = 8 * sizeof(float);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, stride, (void*)(5 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+    Model model;
+    model.vaoId = VAO;
+    model.vertexCount = vertexData.size() / 8;
+    return model;
 }
 
-GLuint loadTexture(const string& filePath)
-{
+GLuint loadTexture(const string& filePath) {
     int width, height, nrChannels;
-    stbi_set_flip_vertically_on_load(true);
+    stbi_set_flip_vertically_on_load(false);
     unsigned char* data = stbi_load(filePath.c_str(), &width, &height, &nrChannels, 0);
     if (!data) {
-        cout << "Falha ao carregar imagem: " << filePath << endl;
-        stbi_image_free(data);
-        return 0;
+        throw runtime_error("Falha ao carregar imagem: " + filePath);
     }
     GLuint texID;
     glGenTextures(1, &texID);
@@ -421,85 +355,43 @@ GLuint loadTexture(const string& filePath)
     return texID;
 }
 
-void drawCube(GLuint shaderProgram, GLuint VAO, vec3 position, vec3 scaleVec, vec3 rotation)
-{
-    mat4 model = translate(mat4(1.0f), position);
-    model = rotate(model, radians(rotation.x), vec3(1.0f, 0.0f, 0.0f));
-    model = rotate(model, radians(rotation.y), vec3(0.0f, 1.0f, 0.0f));
-    model = rotate(model, radians(rotation.z), vec3(0.0f, 0.0f, 1.0f));
-    model = glm::scale(model, scaleVec);
-    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, value_ptr(model));
-    glBindVertexArray(VAO);
-    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)positions.size());
-    glBindVertexArray(0);
-}
-
-void loadTrajectoryPoints(vector<vec3>& points, const string& filename)
-{
+void loadTrajectoryPoints(vector<vec3>& points, const string& filename) {
+    points.clear();
     ifstream inFile(filename);
+
+    // Linha de debug para sabermos que a função foi chamada
+    cout << "Tentando carregar trajetoria do arquivo: " << filename << endl;
+
     if (!inFile.is_open()) {
-        cout << "Erro ao abrir arquivo de trajetoria: " << filename << endl;
+        // Linha de debug se o arquivo não for encontrado
+        cout << "  -> ERRO: Nao foi possivel abrir o arquivo de trajetoria." << endl;
         return;
     }
-    points.clear();
+    
     vec3 p;
     while (inFile >> p.x >> p.y >> p.z) {
         points.push_back(p);
     }
     inFile.close();
-    cout << "Trajetoria carregada de " << filename << " com " << points.size() << " pontos." << endl;
+
+    // Linha de debug para sabermos quantos pontos foram carregados
+    cout << "  -> SUCESSO: Carregado " << points.size() << " pontos." << endl;
 }
 
-void saveTrajectoryPoints(const vector<vec3>& points, const string& filename)
-{
-    ofstream outFile(filename);
-    if (!outFile.is_open()) {
-        cout << "Erro ao salvar arquivo de trajetoria: " << filename << endl;
-        return;
-    }
-    for (const auto& p : points) {
-        outFile << p.x << " " << p.y << " " << p.z << "\n";
-    }
-    outFile.close();
-    cout << "Trajetoria salva em " << filename << endl;
-}
-
-void key_callback(GLFWwindow* window, int key, int scancode, int action, int mode)
-{
-    const float camMoveSpeed = 0.1f;
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mode) {
+    const float camMoveSpeed = 2.5f;
     const float camRotateSpeed = 2.0f;
-    static int currentCube = 1;
-
-    if (action == GLFW_PRESS || action == GLFW_REPEAT) {
-        if (key == GLFW_KEY_ESCAPE) glfwSetWindowShouldClose(window, true);
-        if (key == GLFW_KEY_W) camera.moveForward(camMoveSpeed);
-        if (key == GLFW_KEY_S) camera.moveForward(-camMoveSpeed);
-        if (key == GLFW_KEY_A) camera.moveRight(-camMoveSpeed);
-        if (key == GLFW_KEY_D) camera.moveRight(camMoveSpeed);
-        if (key == GLFW_KEY_Q) camera.moveUp(camMoveSpeed);
-        if (key == GLFW_KEY_E) camera.moveUp(-camMoveSpeed);
-        if (key == GLFW_KEY_LEFT) camera.rotate(-camRotateSpeed, 0.0f);
-        if (key == GLFW_KEY_RIGHT) camera.rotate(camRotateSpeed, 0.0f);
-        if (key == GLFW_KEY_UP) camera.rotate(0.0f, camRotateSpeed);
-        if (key == GLFW_KEY_DOWN) camera.rotate(0.0f, -camRotateSpeed);
-
-        if (action == GLFW_PRESS) {
-            if (key == GLFW_KEY_1) currentCube = 1;
-            else if (key == GLFW_KEY_2) currentCube = 2;
-            else if (key == GLFW_KEY_3) currentCube = 3;
-
-            if (key == GLFW_KEY_P) {
-                string filename = trajectoryBasePath + "trajetoria_cubo" + to_string(currentCube) + ".txt";
-                if (currentCube == 1) saveTrajectoryPoints(trajectoryPoints1, filename);
-                else if (currentCube == 2) saveTrajectoryPoints(trajectoryPoints2, filename);
-                else if (currentCube == 3) saveTrajectoryPoints(trajectoryPoints3, filename);
-            }
-            else if (key == GLFW_KEY_O) {
-                string filename = trajectoryBasePath + "trajetoria_cubo" + to_string(currentCube) + ".txt";
-                if (currentCube == 1) { loadTrajectoryPoints(trajectoryPoints1, filename); currentTargetIndex1 = 0; }
-                else if (currentCube == 2) { loadTrajectoryPoints(trajectoryPoints2, filename); currentTargetIndex2 = 0; }
-                else if (currentCube == 3) { loadTrajectoryPoints(trajectoryPoints3, filename); currentTargetIndex3 = 0; }
-            }
-        }
-    }
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
+        glfwSetWindowShouldClose(window, true);
+    float deltaTime = 0.1f;
+    if (key == GLFW_KEY_W) camera.moveForward(camMoveSpeed * deltaTime);
+    if (key == GLFW_KEY_S) camera.moveForward(-camMoveSpeed * deltaTime);
+    if (key == GLFW_KEY_A) camera.moveRight(-camMoveSpeed * deltaTime);
+    if (key == GLFW_KEY_D) camera.moveRight(camMoveSpeed * deltaTime);
+    if (key == GLFW_KEY_Q) camera.moveUp(camMoveSpeed * deltaTime);
+    if (key == GLFW_KEY_E) camera.moveUp(-camMoveSpeed * deltaTime);
+    if (key == GLFW_KEY_LEFT) camera.rotate(-camRotateSpeed, 0.0f);
+    if (key == GLFW_KEY_RIGHT) camera.rotate(camRotateSpeed, 0.0f);
+    if (key == GLFW_KEY_UP) camera.rotate(0.0f, camRotateSpeed);
+    if (key == GLFW_KEY_DOWN) camera.rotate(0.0f, -camRotateSpeed);
 }
