@@ -31,14 +31,85 @@ vector<vec2> texCoords;
 
 GLuint textureID;
 
-// Variáveis para interação
+// --- Classe Camera ---
+class Camera
+{
+public:
+    vec3 position;
+    float yaw;   // ângulo de rotação em torno de Y
+    float pitch; // ângulo de rotação em torno de X
+
+    Camera(vec3 startPosition = vec3(0.0f, 0.0f, 3.0f), float startYaw = -90.0f, float startPitch = 0.0f)
+        : position(startPosition), yaw(startYaw), pitch(startPitch) {}
+
+    mat4 getViewMatrix()
+    {
+        vec3 front;
+        front.x = cos(radians(yaw)) * cos(radians(pitch));
+        front.y = sin(radians(pitch));
+        front.z = sin(radians(yaw)) * cos(radians(pitch));
+        front = normalize(front);
+
+        vec3 right = normalize(cross(front, vec3(0.0f, 1.0f, 0.0f)));
+        vec3 up = normalize(cross(right, front));
+
+        return lookAt(position, position + front, up);
+    }
+
+    void moveForward(float delta)
+    {
+        vec3 front = getFrontVector();
+        position += delta * front;
+    }
+
+    void moveRight(float delta)
+    {
+        vec3 right = getRightVector();
+        position += delta * right;
+    }
+
+    void moveUp(float delta)
+    {
+        position.y += delta;
+    }
+
+    void rotate(float deltaYaw, float deltaPitch)
+    {
+        yaw += deltaYaw;
+        pitch += deltaPitch;
+        if (pitch > 89.0f)
+            pitch = 89.0f;
+        if (pitch < -89.0f)
+            pitch = -89.0f;
+    }
+
+private:
+    vec3 getFrontVector()
+    {
+        vec3 front;
+        front.x = cos(radians(yaw)) * cos(radians(pitch));
+        front.y = sin(radians(pitch));
+        front.z = sin(radians(yaw)) * cos(radians(pitch));
+        return normalize(front);
+    }
+
+    vec3 getRightVector()
+    {
+        vec3 front = getFrontVector();
+        vec3 right = normalize(cross(front, vec3(0.0f, 1.0f, 0.0f)));
+        return right;
+    }
+};
+
+// --- Variáveis para interação ---
+Camera camera;
 vec3 cubePosition = vec3(0.0f, 0.0f, -5.0f);
 vec3 cubeScale = vec3(1.0f);
 float cubeRotationX = 0.0f;
 float cubeRotationY = 0.0f;
 float cubeRotationZ = 0.0f;
 
-// --- Vertex Shader (com Normais e iluminação Phong) ---
+// --- Vertex Shader ---
 const char *vertexShaderSource = R"(
 #version 400 core
 layout (location = 0) in vec3 aPos;
@@ -50,18 +121,19 @@ out vec3 FragPos;
 out vec3 Normal;
 
 uniform mat4 projection;
+uniform mat4 view;
 uniform mat4 model;
 
 void main()
 {
-    gl_Position = projection * model * vec4(aPos, 1.0);
+    gl_Position = projection * view * model * vec4(aPos, 1.0);
     FragPos = vec3(model * vec4(aPos, 1.0));
     Normal = mat3(transpose(inverse(model))) * aNormal;
     TexCoord = aTexCoord;
 }
 )";
 
-// --- Fragment Shader com iluminação Phong + textura ---
+// --- Fragment Shader ---
 const char *fragmentShaderSource = R"(
 #version 400 core
 in vec2 TexCoord;
@@ -78,23 +150,19 @@ uniform vec3 objectColor;
 
 void main()
 {
-    // propriedades do material
     vec3 ambientColor = 0.2 * lightColor;
-    
-    // Difuso
+
     vec3 norm = normalize(Normal);
     vec3 lightDir = normalize(lightPos - FragPos);
     float diff = max(dot(norm, lightDir), 0.0);
     vec3 diffuseColor = diff * lightColor;
 
-    // Especular
     float shininess = 32.0;
     vec3 viewDir = normalize(viewPos - FragPos);
     vec3 reflectDir = reflect(-lightDir, norm);
     float spec = pow(max(dot(viewDir, reflectDir), 0.0), shininess);
     vec3 specularColor = spec * lightColor;
 
-    // Combinar componentes
     vec3 phong = (ambientColor + diffuseColor + specularColor);
 
     vec4 texColor = texture(texture1, TexCoord);
@@ -110,12 +178,19 @@ bool loadOBJ(const string &objPath, const string &mtlPath, string &textureFileOu
 GLuint loadTexture(const string &filePath);
 void drawCube(GLuint shaderProgram, GLuint VAO, vec3 position, vec3 scale, vec3 rotation);
 
+// --- Funções ---
+void key_callback(GLFWwindow *window, int key, int scancode, int action, int mode);
+GLuint setupShader();
+GLuint setupGeometry();
+bool loadOBJ(const string &objPath, const string &mtlPath, string &textureFileOut);
+GLuint loadTexture(const string &filePath);
+void drawCube(GLuint shaderProgram, GLuint VAO, vec3 position, vec3 scale, vec3 rotation);
+
 int main()
 {
     std::string objPath = "C:/Users/Pedro/Desktop/atividade_cg/CGCCHibrido/assets/Modelos3D/Cube.obj";
     std::string mtlPath = "C:/Users/Pedro/Desktop/atividade_cg/CGCCHibrido/assets/Modelos3D/Cube.mtl";
     std::string texturePath = "C:/Users/Pedro/Desktop/atividade_cg/CGCCHibrido/assets/tex/pixelWall.png";
-
 
     std::string textureFile;
 
@@ -169,8 +244,12 @@ int main()
 
         glUseProgram(shaderProgram);
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, value_ptr(projection));
+
+        mat4 view = camera.getViewMatrix();
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, value_ptr(view));
+
         glUniform3fv(glGetUniformLocation(shaderProgram, "lightPos"), 1, value_ptr(lightPos));
-        glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1, value_ptr(vec3(0.0f, 0.0f, 0.0f)));
+        glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1, value_ptr(camera.position));
         glUniform3fv(glGetUniformLocation(shaderProgram, "lightColor"), 1, value_ptr(lightColor));
         glUniform3fv(glGetUniformLocation(shaderProgram, "objectColor"), 1, value_ptr(objectColor));
 
@@ -178,13 +257,9 @@ int main()
         glBindTexture(GL_TEXTURE_2D, textureID);
         glUniform1i(glGetUniformLocation(shaderProgram, "texture1"), 0);
 
-        vec3 baseRotation = vec3(cubeRotationX, cubeRotationY, cubeRotationZ);
-        vec3 baseScale = cubeScale;
-        vec3 basePosition = cubePosition;
-
-        drawCube(shaderProgram, VAO, basePosition + vec3(0.0f, 0.0f, 0.0f), baseScale, baseRotation);
-        drawCube(shaderProgram, VAO, basePosition + vec3(4.0f, 0.0f, 0.0f), baseScale, baseRotation);
-        drawCube(shaderProgram, VAO, basePosition + vec3(-4.0f, 0.0f, 0.0f), baseScale, baseRotation);
+        drawCube(shaderProgram, VAO, cubePosition + vec3(0.0f, 0.0f, 0.0f), cubeScale, vec3(cubeRotationX, cubeRotationY, cubeRotationZ));
+        drawCube(shaderProgram, VAO, cubePosition + vec3(4.0f, 0.0f, 0.0f), cubeScale, vec3(cubeRotationX, cubeRotationY, cubeRotationZ));
+        drawCube(shaderProgram, VAO, cubePosition + vec3(-4.0f, 0.0f, 0.0f), cubeScale, vec3(cubeRotationX, cubeRotationY, cubeRotationZ));
 
         glfwSwapBuffers(window);
     }
@@ -400,41 +475,39 @@ void drawCube(GLuint shaderProgram, GLuint VAO, vec3 position, vec3 scaleVec, ve
     glBindVertexArray(0);
 }
 
+
 void key_callback(GLFWwindow *window, int key, int scancode, int action, int mode)
 {
     const float moveSpeed = 0.1f;
-    const float scaleSpeed = 0.05f;
-    const float rotationSpeed = 5.0f;
+    const float rotateSpeed = 2.0f;
 
     if (action == GLFW_PRESS || action == GLFW_REPEAT)
     {
         if (key == GLFW_KEY_ESCAPE)
             glfwSetWindowShouldClose(window, true);
 
+        // Movimento da Câmera
         if (key == GLFW_KEY_W)
-            cubePosition.y += moveSpeed;
+            camera.moveForward(moveSpeed);
         if (key == GLFW_KEY_S)
-            cubePosition.y -= moveSpeed;
+            camera.moveForward(-moveSpeed);
         if (key == GLFW_KEY_A)
-            cubePosition.x -= moveSpeed;
+            camera.moveRight(-moveSpeed);
         if (key == GLFW_KEY_D)
-            cubePosition.x += moveSpeed;
+            camera.moveRight(moveSpeed);
+        if (key == GLFW_KEY_Q)
+            camera.moveUp(moveSpeed);
+        if (key == GLFW_KEY_E)
+            camera.moveUp(-moveSpeed);
 
-        if (key == GLFW_KEY_I)
-            cubePosition.z += moveSpeed;
-        if (key == GLFW_KEY_J)
-            cubePosition.z -= moveSpeed;
-
-        if (key == GLFW_KEY_LEFT_BRACKET)
-            cubeScale *= (1.0f - scaleSpeed);
-        if (key == GLFW_KEY_RIGHT_BRACKET)
-            cubeScale *= (1.0f + scaleSpeed);
-
-        if (key == GLFW_KEY_X)
-            cubeRotationX += rotationSpeed;
-        if (key == GLFW_KEY_Y)
-            cubeRotationY += rotationSpeed;
-        if (key == GLFW_KEY_Z)
-            cubeRotationZ += rotationSpeed;
+        // Rotação da Câmera
+        if (key == GLFW_KEY_LEFT)
+            camera.rotate(-rotateSpeed, 0.0f);
+        if (key == GLFW_KEY_RIGHT)
+            camera.rotate(rotateSpeed, 0.0f);
+        if (key == GLFW_KEY_UP)
+            camera.rotate(0.0f, rotateSpeed);
+        if (key == GLFW_KEY_DOWN)
+            camera.rotate(0.0f, -rotateSpeed);
     }
 }
