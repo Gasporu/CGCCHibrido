@@ -1,7 +1,3 @@
-/* Hello Textured OBJ Viewer com modelo Phong
- * Versão com instâncias, interação por teclado e iluminação Phong
- * Adaptado por ChatGPT (junho/2025)
- */
 
 #include <iostream>
 #include <fstream>
