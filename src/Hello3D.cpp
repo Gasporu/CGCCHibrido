@@ -112,6 +112,7 @@ uniform sampler2D texture1;
 uniform vec3 lightPos;
 uniform vec3 viewPos;
 uniform vec3 lightColor;
+uniform bool isSelected;
 void main(){
     vec3 ambientColor = 0.2 * lightColor;
     vec3 norm = normalize(Normal);
@@ -124,6 +125,7 @@ void main(){
     float spec = pow(max(dot(viewDir, reflectDir), 0.0), shininess);
     vec3 specularColor = spec * lightColor;
     vec3 phong = (ambientColor + diffuseColor + specularColor);
+    if (isSelected) { phong *= vec3(0.8, 1.2, 0.8); }
     vec4 texColor = texture(texture1, TexCoord);
     FragColor = vec4(phong, 1.0) * texColor;
 })";
@@ -132,6 +134,7 @@ Camera camera;
 vector<SceneObject> sceneObjects;
 map<string, Model> loadedModels;
 map<string, GLuint> loadedTextures;
+int selectedObjectIndex = 0;
 
 int main() {
     glfwInit();
@@ -139,7 +142,7 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    window = glfwCreateWindow(WIDTH, HEIGHT, "Visualizador de Modelos Multiplos", nullptr, nullptr);
+    window = glfwCreateWindow(WIDTH, HEIGHT, "Visualizador de Modelos Interativo", nullptr, nullptr);
     glfwMakeContextCurrent(window);
     glfwSetKeyCallback(window, key_callback);
 
@@ -221,7 +224,7 @@ int main() {
         lastFrameTime = currentFrameTime;
 
         glfwPollEvents();
-        glClearColor(0.05f, 0.05f, 0.05f, 1.0f);
+        glClearColor(0.53f, 0.81f, 0.92f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glUseProgram(shaderProgram);
@@ -232,7 +235,9 @@ int main() {
         glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1, value_ptr(camera.position));
         glUniform3fv(glGetUniformLocation(shaderProgram, "lightColor"), 1, value_ptr(lightColor));
 
-        for (auto& obj : sceneObjects) {
+        for (int i = 0; i < sceneObjects.size(); ++i) {
+            auto& obj = sceneObjects[i];
+
             if (obj.trajectoryPoints.size() > 1) {
                 vec3 targetPos = obj.trajectoryPoints[obj.currentTargetIndex];
                 vec3 direction = normalize(targetPos - obj.position);
@@ -246,9 +251,17 @@ int main() {
 
             mat4 modelMatrix = mat4(1.0f);
             modelMatrix = translate(modelMatrix, obj.position);
+            
+            modelMatrix = rotate(modelMatrix, radians(obj.rotation.y), vec3(0.0f, 1.0f, 0.0f));
+            modelMatrix = rotate(modelMatrix, radians(obj.rotation.x), vec3(1.0f, 0.0f, 0.0f));
+            modelMatrix = rotate(modelMatrix, radians(obj.rotation.z), vec3(0.0f, 0.0f, 1.0f));
+
             modelMatrix = scale(modelMatrix, obj.scale);
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, value_ptr(modelMatrix));
             
+            bool isSelected = (i == selectedObjectIndex);
+            glUniform1i(glGetUniformLocation(shaderProgram, "isSelected"), isSelected);
+
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, obj.textureId);
             glUniform1i(glGetUniformLocation(shaderProgram, "texture1"), 0);
@@ -358,40 +371,55 @@ GLuint loadTexture(const string& filePath) {
 void loadTrajectoryPoints(vector<vec3>& points, const string& filename) {
     points.clear();
     ifstream inFile(filename);
-
-    // Linha de debug para sabermos que a função foi chamada
-    cout << "Tentando carregar trajetoria do arquivo: " << filename << endl;
-
-    if (!inFile.is_open()) {
-        // Linha de debug se o arquivo não for encontrado
-        cout << "  -> ERRO: Nao foi possivel abrir o arquivo de trajetoria." << endl;
-        return;
-    }
-    
+    if (!inFile.is_open()) return;
     vec3 p;
     while (inFile >> p.x >> p.y >> p.z) {
         points.push_back(p);
     }
     inFile.close();
-
-    // Linha de debug para sabermos quantos pontos foram carregados
-    cout << "  -> SUCESSO: Carregado " << points.size() << " pontos." << endl;
 }
 
 void key_callback(GLFWwindow* window, int key, int scancode, int action, int mode) {
-    const float camMoveSpeed = 2.5f;
+    const float camMoveSpeed = 0.1f;
     const float camRotateSpeed = 2.0f;
-    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
-        glfwSetWindowShouldClose(window, true);
-    float deltaTime = 0.1f;
-    if (key == GLFW_KEY_W) camera.moveForward(camMoveSpeed * deltaTime);
-    if (key == GLFW_KEY_S) camera.moveForward(-camMoveSpeed * deltaTime);
-    if (key == GLFW_KEY_A) camera.moveRight(-camMoveSpeed * deltaTime);
-    if (key == GLFW_KEY_D) camera.moveRight(camMoveSpeed * deltaTime);
-    if (key == GLFW_KEY_Q) camera.moveUp(camMoveSpeed * deltaTime);
-    if (key == GLFW_KEY_E) camera.moveUp(-camMoveSpeed * deltaTime);
-    if (key == GLFW_KEY_LEFT) camera.rotate(-camRotateSpeed, 0.0f);
-    if (key == GLFW_KEY_RIGHT) camera.rotate(camRotateSpeed, 0.0f);
-    if (key == GLFW_KEY_UP) camera.rotate(0.0f, camRotateSpeed);
-    if (key == GLFW_KEY_DOWN) camera.rotate(0.0f, -camRotateSpeed);
+    const float objectRotateSpeed = 5.0f;
+    const float objectScaleSpeed = 0.05f;
+
+    if (action == GLFW_PRESS || action == GLFW_REPEAT) {
+        if (key == GLFW_KEY_ESCAPE) glfwSetWindowShouldClose(window, true);
+        
+        if (key == GLFW_KEY_W) camera.moveForward(camMoveSpeed);
+        if (key == GLFW_KEY_S) camera.moveForward(-camMoveSpeed);
+        if (key == GLFW_KEY_A) camera.moveRight(-camMoveSpeed);
+        if (key == GLFW_KEY_D) camera.moveRight(camMoveSpeed);
+        if (key == GLFW_KEY_Q) camera.moveUp(camMoveSpeed);
+        if (key == GLFW_KEY_E) camera.moveUp(-camMoveSpeed);
+
+        if (key == GLFW_KEY_LEFT) camera.rotate(-camRotateSpeed, 0.0f);
+        if (key == GLFW_KEY_RIGHT) camera.rotate(camRotateSpeed, 0.0f);
+        if (key == GLFW_KEY_UP) camera.rotate(0.0f, camRotateSpeed);
+        if (key == GLFW_KEY_DOWN) camera.rotate(0.0f, -camRotateSpeed);
+
+        if (!sceneObjects.empty()) {
+            if (key == GLFW_KEY_EQUAL || key == GLFW_KEY_KP_ADD) {
+                sceneObjects[selectedObjectIndex].scale += objectScaleSpeed;
+            }
+            if (key == GLFW_KEY_MINUS || key == GLFW_KEY_KP_SUBTRACT) {
+                sceneObjects[selectedObjectIndex].scale -= objectScaleSpeed;
+            }
+
+            if (key == GLFW_KEY_J) sceneObjects[selectedObjectIndex].rotation.y += objectRotateSpeed;
+            if (key == GLFW_KEY_L) sceneObjects[selectedObjectIndex].rotation.y -= objectRotateSpeed;
+            if (key == GLFW_KEY_I) sceneObjects[selectedObjectIndex].rotation.x += objectRotateSpeed;
+            if (key == GLFW_KEY_K) sceneObjects[selectedObjectIndex].rotation.x -= objectRotateSpeed;
+            if (key == GLFW_KEY_U) sceneObjects[selectedObjectIndex].rotation.z += objectRotateSpeed;
+            if (key == GLFW_KEY_O) sceneObjects[selectedObjectIndex].rotation.z -= objectRotateSpeed;
+        }
+    }
+    
+    if (action == GLFW_PRESS && !sceneObjects.empty()) {
+        if (key == GLFW_KEY_TAB) {
+            selectedObjectIndex = (selectedObjectIndex + 1) % sceneObjects.size();
+        }
+    }
 }
